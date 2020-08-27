@@ -11,6 +11,7 @@ from model import *
 from tqdm import tqdm
 import os, shutil, pickle
 from tensorboardX import SummaryWriter
+from model import resnet101
 
 def train(config):
 
@@ -25,11 +26,11 @@ def train(config):
     valid_set = AgeGenderDataset(config.test_csv_path, transform=image_transformer()['val'], LAP=config.LAP)
     validloader = DataLoader(valid_set, batch_size=config.batch_size, shuffle=True, num_workers=8)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda", index=1)
 
     if config.checkpoint is None:
         start_epoch = 0
-        model = VGG16_net(100)
+        model = resnet101(100)
         # optimizer = optim.SGD(model.parameters(), lr=config.lr, momentum=0.9)
         optimizer = optim.Adam(model.parameters(), lr=config.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-4)
     else:
@@ -46,7 +47,9 @@ def train(config):
     train_loss_idx = 0
     test_loss_idx = 0
     least_mae = 100
-    epsilon_error = 0.0
+    epsilon_error =0.0
+    exp_least_mae = 100
+    exp_epsilon_error =0.0
     for epoch in range(start_epoch, start_epoch + config.num_epochs):
         if epoch in config.lr_decay_epochs:
             for param_group in optimizer.param_groups:
@@ -65,6 +68,7 @@ def train(config):
                 maes = 0.0
                 exp_maes = 0.0
                 total_epsilon = 0.0
+                exp_total_epsilon = 0.0
 
                 for batch_idx, data in enumerate(train_loader_pbar):
                     if config.LAP:
@@ -78,7 +82,7 @@ def train(config):
                     #forward
                     age_pred = model(img)
                     #Loss
-                    age_loss = age_criterion(age_pred, age)
+                    age_loss = age_criterion(torch.log(age_pred), age)
                     #Backward
                     optimizer.zero_grad()
                     age_loss.backward()
@@ -88,7 +92,7 @@ def train(config):
                     train_loss_sum += age_loss.item()
                     total += 1
                     #Calculate Accuracy
-                    a = np.arange(1, 101)
+                    a = np.arange(0, 100)
                     a = np.tile(a, ((age_pred.size(0), 1)))
                     exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
                     # print(exp_age_pred)
@@ -105,13 +109,17 @@ def train(config):
                         epsilon = 1 - torch.exp(-(torch.square(int_age_pred - int_age)) / (2 * torch.square(std)))
                         total_epsilon += sum(epsilon.data) / config.batch_size
 
+                        exp_epsilon = 1 - torch.exp(-(torch.square(exp_age_pred - int_age)) / (2 * torch.square(std)))
+                        exp_total_epsilon += sum(exp_epsilon.data) / config.batch_size
+
                         train_loader_pbar.set_description(
                             '[training] epoch:%d/%d, ' % (epoch, config.num_epochs+start_epoch) +
                             'train_loss:%.3f, ' % (train_loss_sum / total) +
                             'Accuracy:%.3f ' % (total_acc / total) +
                             'MAE:%.3f(%.3f) ' % (mae, maes / total) +
-                            'Expected MAE:%.3f(%.3f) ' % (exp_mae, exp_maes / total) +
                             'Epsilon error:%.3f ' % (total_epsilon / total) +
+                            'Expected MAE:%.3f(%.3f) ' % (exp_mae, exp_maes / total) +
+                            'Expected Epsilon error:%.3f ' % (exp_total_epsilon / total) +
                             'predicted:%d ' % (int_age_pred[0]) +
                             'Answer:%d ' % (int_age[0]))
 
@@ -128,12 +136,14 @@ def train(config):
                 summary.add_scalar('train mae', maes/total, train_loss_idx)
                 train_loss_idx+=1
 
-                f = open('./logger/model2/Clss/vgg16/train.txt', 'a')
-                # f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\t Epsilon error: {:.3f}\n'.format(epoch,train_loss_sum/total, total_acc/total, maes/total, exp_maes/total,  total_epsilon / total))
-                f.write(
-                    'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\n'.format(
-                        epoch, train_loss_sum / total, total_acc / total, maes / total,
-                        total_epsilon / total))
+                if config.LAP:
+                    f = open(os.path.join(config.logger_path, 'train.txt'), 'a')
+                    f.write(
+                        'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\t Expected Mae: {:.3f}\t Exp_Epsilon error: {:.3f}\n'.format(
+                            epoch, train_loss_sum / total, total_acc / total, maes / total, total_epsilon / total, exp_maes / total, exp_total_epsilon/total))
+                else:
+                    f = open(os.path.join(config.logger_path, 'train.txt'), 'a')
+                    f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\n'.format(epoch,train_loss_sum/total, total_acc/total, maes/total, exp_maes/total))
 
 
             elif mode == 'eval':
@@ -145,6 +155,7 @@ def train(config):
                 exp_maes =0.0
                 val_loader_pbar = tqdm(validloader)
                 total_epsilon = 0.0
+                exp_total_epsilon =0.0
                 for batch_idx, data in enumerate(val_loader_pbar):
                     if config.LAP:
                         img, age, std = data
@@ -157,13 +168,13 @@ def train(config):
                     # forward
                     age_pred= model(img)
                     # Loss
-                    age_loss = age_criterion(age_pred, age)
+                    age_loss = age_criterion(torch.log(age_pred), age)
 
                     optimizer.zero_grad()
                     val_loss_sum += age_loss.item()
                     total += 1
                     # Calculate Accuracy
-                    a = np.arange(1, 101)
+                    a = np.arange(0, 100)
                     a = np.tile(a, ((age_pred.size(0), 1)))
                     exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
                     int_age_pred = torch.argmax(age_pred, dim=1).data
@@ -178,14 +189,17 @@ def train(config):
                     if config.LAP:
                         epsilon = 1 - torch.exp(-(torch.square(int_age_pred - int_age)) / (2 * torch.square(std)))
                         total_epsilon += sum(epsilon.data) / config.batch_size
+                        exp_epsilon = 1 - torch.exp(-(torch.square(exp_age_pred - int_age)) / (2 * torch.square(std)))
+                        exp_total_epsilon += sum(exp_epsilon.data) / config.batch_size
 
                         val_loader_pbar.set_description(
                             '[testing] epoch:%d/%d, ' % (epoch, config.num_epochs+start_epoch) +
                             'valid_loss:%.3f, ' % (val_loss_sum / total) +
                             'Accuracy:%.3f ' % (total_acc / total) +
                             'MAE:%.3f(%.3f) ' % (mae, maes/ total) +
-                            'Expected MAE:%.3f(%.3f) ' % (exp_mae, exp_maes / total) +
                             'Epsilon error:%.3f ' % (total_epsilon / total) +
+                            'Expected MAE:%.3f(%.3f) ' % (exp_mae, exp_maes / total) +
+                            'Expected Epsilon error:%.3f ' % (exp_total_epsilon / total) +
                             'predicted:%d ' % (int_age_pred[0]) +
                             'Answer:%d ' % (int_age[0]))
 
@@ -203,20 +217,30 @@ def train(config):
                     least_mae = maes/total
                     if config.LAP:
                         epsilon_error = total_epsilon/total
+
+                if exp_maes/total < exp_least_mae:
+                    exp_least_mae = exp_maes/total
+                    if config.LAP:
+                        exp_epsilon_error = total_epsilon/total
+
                 summary.add_scalar('valid mae', maes/total, test_loss_idx)
                 test_loss_idx+=1
 
                 if config.LAP:
-                    print("===Smallest MAE: {:.3f}, Epsilon error: {:.3f}".format(least_mae, epsilon_error))
+                    print("===Smallest MAE: {:.3f}, Epsilon error: {:.3f}, Exp_MAE: {:.3f}, Exp_epsilon_error: {:.3f}".format(least_mae, epsilon_error, exp_least_mae, exp_epsilon_error))
                 else:
-                    print("===Smallest MAE: {:.3f}".format(least_mae))
+                    print("===Smallest MAE: {:.3f}, Exp_MAE: {:.3f}".format(least_mae, exp_least_mae))
 
-                f = open('./logger/model1/Clss/resnet101/val.txt', 'a')
-                # f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\t Epsilon error: {:.3f}\n'.format(epoch, val_loss_sum / total, total_acc / total,maes / total, exp_maes/total, total_epsilon / total))
-                f.write(
-                    'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\n'.format(
-                        epoch, val_loss_sum / total, total_acc / total, maes / total,
-                               total_epsilon / total))
+                if config.LAP:
+                    f = open(os.path.join(config.logger_path, 'val.txt'), 'a')
+                    f.write(
+                        'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\t Expected Mae: {:.3f}\t Exp_Epsilon error: {:.3f}\n'.format(
+                            epoch, train_loss_sum / total, total_acc / total, maes / total, total_epsilon / total,
+                                   exp_maes / total, exp_total_epsilon / total))
+                else:
+                    f = open(os.path.join(config.logger_path, 'val.txt'), 'a')
+                    f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\n'.format(
+                        epoch, train_loss_sum / total, total_acc / total, maes / total, exp_maes / total))
 
     if config.model_save == True:
         model_out_path = config.model_save_path + str(epoch) + '.pth'
@@ -227,24 +251,25 @@ def train(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='imdb_crop')
-    parser.add_argument('--LAP', type=bool, default=False)
-    # parser.add_argument('--train_csv_path', default='./data/LAP/LAP_train.csv')
-    parser.add_argument('--train_csv_path', default='./data/imdb_wiki_train.csv')
+    parser.add_argument('--LAP', type=bool, default=True)
+    parser.add_argument('--train_csv_path', default='./data/LAP/LAP_train.csv')
+    # parser.add_argument('--train_csv_path', default='./data/imdb_wiki_train.csv')
     parser.add_argument('--test_csv_path', default='./data/LAP/LAP_test.csv')
     # parser.add_argument('--model_save_path', type=str, default="model_load/model1_LAP/Clss/resent101_epoch_")
-    parser.add_argument('--model_save_path', type=str, default="model_load/model2_IMDB_LAP/Clss/vgg16_epoch")
-    # parser.add_argument('--checkpoint', default='model_load/model2_IMDB_LAP/Clss/vgg16_epoch_29.pth')
-    parser.add_argument('--checkpoint', default=None)
-    parser.add_argument('--summary_write_path', default='./log_save/model2/Clss/vgg16')
+    parser.add_argument('--model_save_path', type=str, default="model_load/model2_IMDB_LAP/Clss/resnet101_epoch")
+    parser.add_argument('--checkpoint', default='model_load/model2_IMDB_LAP/Clss/resnet101_epoch29.pth')
+    # parser.add_argument('--checkpoint', default=None)
+    parser.add_argument('--summary_write_path', default='./log_save/model2/Clss/resnet101')
+    parser.add_argument('--logger_path', default='./logger/model2/Clss/resnet101/')
     parser.add_argument('--img_resize', type=int, default=48)
     parser.add_argument('--model_save', default=True)
 
     parser.add_argument('--mode', default=['train','eval'])
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=int, default=0.0001)
-    parser.add_argument('--num_epochs', type=int, default=30)
+    parser.add_argument('--num_epochs', type=int, default=60)
 
-    parser.add_argument('--lr_decay_epochs', default=[45, 60])
+    parser.add_argument('--lr_decay_epochs', default=[600])
     parser.add_argument('--lr_decay_rate', type=float, default=0.1)
 
     parser.add_argument('--min', type=int, default=1, help='minimum age')
