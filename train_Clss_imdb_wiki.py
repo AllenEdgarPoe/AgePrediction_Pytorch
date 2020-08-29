@@ -42,7 +42,7 @@ def train(config):
         # optimizer = optim.Adam(model.parameters(), lr=config.lr)
 
     model = model.to(device)
-    age_criterion = nn.NLLLoss().to(device)
+    age_criterion = nn.L1Loss().to(device)
 
     train_loss_idx = 0
     test_loss_idx = 0
@@ -77,12 +77,16 @@ def train(config):
                     else:
                         img, age = data
 
-                    img = torch.autograd.Variable(img.float().to(device))
-                    age = torch.autograd.Variable(age.long().to(device))
+                    img = torch.autograd.Variable(img.float().to(device), requires_grad=True)
+                    age = torch.autograd.Variable(age.float().to(device), requires_grad=True)
                     #forward
                     age_pred = model(img)
+                    a = np.arange(0, 100)
+                    a = np.tile(a, ((age_pred.size(0), 1)))
+                    exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
                     #Loss
-                    age_loss = age_criterion(torch.log(age_pred), age)
+                    # age_loss = age_criterion(torch.log(age_pred), age)
+                    age_loss = age_criterion(exp_age_pred, age)
                     #Backward
                     optimizer.zero_grad()
                     age_loss.backward()
@@ -92,9 +96,7 @@ def train(config):
                     train_loss_sum += age_loss.item()
                     total += 1
                     #Calculate Accuracy
-                    a = np.arange(0, 100)
-                    a = np.tile(a, ((age_pred.size(0), 1)))
-                    exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
+
                     # print(exp_age_pred)
                     int_age_pred = torch.argmax(age_pred, dim=1).data
                     int_age = age
@@ -137,12 +139,12 @@ def train(config):
                 train_loss_idx+=1
 
                 if config.LAP:
-                    f = open(os.path.join(config.logger_path, 'train.txt'), 'a')
+                    f = open(os.path.join(config.logger_path, 'new_train.txt'), 'a')
                     f.write(
                         'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\t Expected Mae: {:.3f}\t Exp_Epsilon error: {:.3f}\n'.format(
                             epoch, train_loss_sum / total, total_acc / total, maes / total, total_epsilon / total, exp_maes / total, exp_total_epsilon/total))
                 else:
-                    f = open(os.path.join(config.logger_path, 'train.txt'), 'a')
+                    f = open(os.path.join(config.logger_path, 'new2_train.txt'), 'a')
                     f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\n'.format(epoch,train_loss_sum/total, total_acc/total, maes/total, exp_maes/total))
 
 
@@ -167,16 +169,19 @@ def train(config):
                     age = torch.autograd.Variable(age.long().to(device))
                     # forward
                     age_pred= model(img)
+                    a = np.arange(0, 100)
+                    a = np.tile(a, ((age_pred.size(0), 1)))
+                    exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
+
                     # Loss
-                    age_loss = age_criterion(torch.log(age_pred), age)
+                    # age_loss = age_criterion(torch.log(age_pred), age)
+                    age_loss = age_criterion(exp_age_pred, age)
 
                     optimizer.zero_grad()
                     val_loss_sum += age_loss.item()
                     total += 1
                     # Calculate Accuracy
-                    a = np.arange(0, 100)
-                    a = np.tile(a, ((age_pred.size(0), 1)))
-                    exp_age_pred = torch.sum(age_pred * torch.tensor(a).to(device), 1).data
+
                     int_age_pred = torch.argmax(age_pred, dim=1).data
                     int_age = age
                     acc = (int_age == int_age_pred).sum().item() /config.batch_size
@@ -232,13 +237,13 @@ def train(config):
                     print("===Smallest MAE: {:.3f}, Exp_MAE: {:.3f}".format(least_mae, exp_least_mae))
 
                 if config.LAP:
-                    f = open(os.path.join(config.logger_path, 'val.txt'), 'a')
+                    f = open(os.path.join(config.logger_path, 'new_val.txt'), 'a')
                     f.write(
                         'Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Epsilon error: {:.3f}\t Expected Mae: {:.3f}\t Exp_Epsilon error: {:.3f}\n'.format(
                             epoch, train_loss_sum / total, total_acc / total, maes / total, total_epsilon / total,
                                    exp_maes / total, exp_total_epsilon / total))
                 else:
-                    f = open(os.path.join(config.logger_path, 'val.txt'), 'a')
+                    f = open(os.path.join(config.logger_path, 'new2_val.txt'), 'a')
                     f.write('Epoch: {}\t Loss: {:.3f}\t Accuracy: {:.3f}\t Mae: {:.3f}\t Expected Mae: {:.3f}\n'.format(
                         epoch, train_loss_sum / total, total_acc / total, maes / total, exp_maes / total))
 
@@ -251,14 +256,14 @@ def train(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='imdb_crop')
-    parser.add_argument('--LAP', type=bool, default=True)
+    parser.add_argument('--LAP', type=bool, default=False)
     parser.add_argument('--train_csv_path', default='./data/LAP/LAP_train.csv')
     # parser.add_argument('--train_csv_path', default='./data/imdb_wiki_train.csv')
     parser.add_argument('--test_csv_path', default='./data/LAP/LAP_test.csv')
     # parser.add_argument('--model_save_path', type=str, default="model_load/model1_LAP/Clss/resent101_epoch_")
-    parser.add_argument('--model_save_path', type=str, default="model_load/model2_IMDB_LAP/Clss/resnet101_epoch")
-    parser.add_argument('--checkpoint', default='model_load/model2_IMDB_LAP/Clss/resnet101_epoch29.pth')
-    # parser.add_argument('--checkpoint', default=None)
+    parser.add_argument('--model_save_path', type=str, default="model_load/model2_IMDB_LAP/Clss/new2_resnet101_epoch")
+    # parser.add_argument('--checkpoint', default='model_load/model2_IMDB_LAP/Clss/new_resnet101_epoch29.pth')
+    parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--summary_write_path', default='./log_save/model2/Clss/resnet101')
     parser.add_argument('--logger_path', default='./logger/model2/Clss/resnet101/')
     parser.add_argument('--img_resize', type=int, default=48)
@@ -266,10 +271,10 @@ if __name__ == "__main__":
 
     parser.add_argument('--mode', default=['train','eval'])
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--lr', type=int, default=0.0001)
-    parser.add_argument('--num_epochs', type=int, default=60)
+    parser.add_argument('--lr', type=int, default=0.01)
+    parser.add_argument('--num_epochs', type=int, default=30)
 
-    parser.add_argument('--lr_decay_epochs', default=[600])
+    parser.add_argument('--lr_decay_epochs', default=[15])
     parser.add_argument('--lr_decay_rate', type=float, default=0.1)
 
     parser.add_argument('--min', type=int, default=1, help='minimum age')
